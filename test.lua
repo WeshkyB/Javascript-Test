@@ -81,7 +81,7 @@ end
 local function OnTeleport(teleportState)
     if teleportState == Enum.TeleportState.Started then
         queue_on_teleport([[
-            loadstring(game:HttpGet("https://raw.githubusercontent.com/your-repo/main/serverhopper.lua"))()
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/WeshkyB/Javascript-Test/refs/heads/main/test.lua"))()
         ]])
     end
 end
