@@ -1,146 +1,93 @@
-
-local Players = game:GetService("Players")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
 
--- Universelle queue_on_teleport Implementierung
-local queueteleport = (syn and syn.queue_on_teleport) or queue_on_teleport or (fluxus and fluxus.queue_on_teleport) or function() end
+local PlaceID = game.PlaceId
+local Player = Players.LocalPlayer
+local HopInterval = 6 -- Sekunden zwischen Hops
+local MinPlayers = 15 -- Mindestspieleranzahl
 
--- Universelle Dateifunktionen
-local filesafe = {
-    write = (syn and syn.writefile) or writefile,
-    read = (syn and syn.readfile) or readfile,
-    list = (syn and syn.listfiles) or listfiles,
-    makefolder = (syn and syn.makefolder) or makefolder,
-    isfolder = (syn and syn.isfolder) or isfolder
+-- Manuelle Serverliste als Fallback
+local BackupServers = {
+    "b00bd089-0968-4430-92a8-eb7dfd9f562a",
+    "fa5772df-9ea7-4f00-b999-f85121b1bb41",
+    "8442b5dc-6bb1-497b-8cc9-0f31b79bfa40"
 }
 
--- Server-Hopping mit Build-Saving
-local function AutoBuildSaver()
-    -- Konfiguration
-    local MIN_BLOCKS = 50
-    local SCAN_INTERVAL = 6
-    local TELEPORT_DELAY = 3
+local function GetServerList()
+    local success, result = pcall(function()
+        local response = game:HttpGet(
+            "https://games.roblox.com/v1/games/"..PlaceID.."/servers/Public?sortOrder=Asc&limit=100",
+            true
+        )
+        return HttpService:JSONDecode(response)
+    end)
     
-    -- Team-Definitionen
-    local Teams = {
-        ["magenta"] = workspace["MagentaZone"],
-        ["yellow"] = workspace["New YellerZone"],
-        ["black"] = workspace["BlackZone"],
-        ["white"] = workspace["WhiteZone"],
-        ["green"] = workspace["CamoZone"],
-        ["blue"] = workspace["Really blueZone"],
-        ["red"] = workspace["Really redZone"]
-    }
+    return success and result.data or nil
+end
 
-    -- Hilfsfunktionen
-    local function GetStringAngles(cframe)
-        local X, Y, Z = cframe:ToEulerAnglesXYZ()
-        return string.format("%.5f,%.5f,%.5f", math.deg(X), math.deg(Y), math.deg(Z))
-    end
-
-    local function SavePlayerBuild(playerName, teamName)
-        local playerFolder = workspace.Blocks:FindFirstChild(playerName)
-        if not playerFolder then return false end
-        
-        local teamBase = Teams[teamName]
-        if not teamBase then return false end
-
-        local blocks = {}
-        for _, block in ipairs(playerFolder:GetChildren()) do
-            local part = block:FindFirstChild("PPart")
-            if part then
-                table.insert(blocks, {
-                    Type = block.Name,
-                    Position = part.Position,
-                    Rotation = part.CFrame - part.Position,
-                    Size = part.Size,
-                    Color = part.Color,
-                    Transparency = part.Transparency
-                })
-            end
+local function FilterServers(servers)
+    local valid = {}
+    local current = game.JobId
+    
+    for _, server in ipairs(servers) do
+        if server.id ~= current and (server.playing or 0) >= MinPlayers then
+            table.insert(valid, server)
         end
-
-        if #blocks < MIN_BLOCKS then return false end
-
-        local buildData = {
-            Player = playerName,
-            Team = teamName,
-            Blocks = blocks,
-            Timestamp = os.time(),
-            Server = game.JobId
-        }
-
-        local fileName = "BuildSave_"..playerName.."_"..os.date("%Y%m%d_%H%M%S")..".json"
-        local success, err = pcall(function()
-            filesafe.write("BuildSaves/"..fileName, HttpService:JSONEncode(buildData))
-        end)
-
-        return success
     end
+    
+    table.sort(valid, function(a,b) return a.playing < b.playing end)
+    return valid
+end
 
-    -- Hauptfunktion
-    local function ScanAndSave()
-        if not filesafe.isfolder("BuildSaves") then
-            filesafe.makefolder("BuildSaves")
+local function HopToServer()
+    -- Versuche API-Server zuerst
+    local servers = GetServerList()
+    if servers then
+        local filtered = FilterServers(servers)
+        if #filtered > 0 then
+            local target = filtered[math.random(1, math.min(5, #filtered))].id
+            print("🌐 Server-Hop zu:", target)
+            TeleportService:TeleportToPlaceInstance(PlaceID, target)
+            return
         end
-
-        print("Scanning server for builds...")
-        local saved = 0
-        
-        for _, player in ipairs(Players:GetPlayers()) do
-            if SavePlayerBuild(player.Name, tostring(player.Team)) then
-                saved = saved + 1
-                print("Saved build for:", player.Name)
-            end
-        end
-
-        return saved
     end
-
-    local function FindNewServer()
-        local servers = {}
-        local success, response = pcall(function()
-            return game:HttpGet("https://games.roblox.com/v1/games/"..game.PlaceId.."/servers/Public?limit=100")
-        end)
-
-        if success then
-            for _, server in ipairs(HttpService:JSONDecode(response).data) do
-                if server.id ~= game.JobId and server.playing < server.maxPlayers then
-                    table.insert(servers, server.id)
-                end
-            end
+    
+    -- Fallback auf manuelle Liste
+    if #BackupServers > 0 then
+        local target = BackupServers[math.random(1, #BackupServers)]
+        if target ~= game.JobId then
+            print("🔄 Fallback-Hop zu bekanntem Server:", target)
+            TeleportService:TeleportToPlaceInstance(PlaceID, target)
+            return
         end
-
-        return servers
     end
+    
+    warn("⚠️ Keine Server verfügbar. Warte "..HopInterval.." Sekunden...")
+end
 
-    -- Teleport-Sicherung
-    queueteleport([[
-        loadstring(game:HttpGet("https://raw.githubusercontent.com/WeshkyB/Javascript-Test/refs/heads/main/test.lua"))()
-    ]])
-
-    -- Hauptloop
+-- Haupt-Loop mit automatischer Re-Injection
+local function AutoHop()
     while true do
-        local saved = ScanAndSave()
-        print("Saved", saved, "builds in this server")
+        HopToServer()
+        local start = tick()
         
-        wait(TELEPORT_DELAY)
-        
-        local servers = FindNewServer()
-        if #servers > 0 then
-            print("Teleporting to new server...")
-            TeleportService:TeleportToPlaceInstance(game.PlaceId, servers[math.random(#servers)])
-            break
-        else
-            print("No available servers found, retrying...")
-            wait(SCAN_INTERVAL)
-        end
+        -- Warte bis zum nächsten Hop
+        repeat task.wait() until tick() - start >= HopInterval
     end
 end
 
--- Starter
-if not _G.BuildSaverRunning then
-    _G.BuildSaverRunning = true
-    AutoBuildSaver()
+-- Nach Teleport neu starten
+local function OnTeleport(teleportState)
+    if teleportState == Enum.TeleportState.Started then
+        queue_on_teleport([[
+            loadstring(game:HttpGet("https://raw.githubusercontent.com/your-repo/main/serverhopper.lua"))()
+        ]])
+    end
 end
+
+Player.OnTeleport:Connect(OnTeleport)
+
+-- Skript starten
+if not game:IsLoaded() then game.Loaded:Wait() end
+AutoHop()
